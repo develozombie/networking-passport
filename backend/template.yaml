@@ -1,46 +1,266 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  backend
+  Backend for the AWS Community Day networking app
 
-  Powertools example
-
-Globals: # https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-specification-template-anatomy-globals.html
+Parameters:
+  ShortIdGSIName:
+    Type: String
+    Default: ShortIdGSI
+    Description: Name of the Short ID Global Secondary Index
+  DateLSIName:
+    Type: String
+    Default: DateLSI
+    Description: Name of the Date Local Secondary Index
+Globals:
   Function:
+    CodeUri: function
     Timeout: 5
     MemorySize: 128
     Runtime: python3.12
 
     Tracing: Active
-    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
     LoggingConfig:
       LogFormat: JSON
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: PowertoolsCommunityDay
+        POWERTOOLS_METRICS_NAMESPACE: Powertools
+        LOG_LEVEL: INFO
+        DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+    Tags:
+      LambdaPowertools: python
   Api:
     TracingEnabled: true
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function     # More info about Function Resource: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
     Properties:
-      Handler: app.lambda_handler
-      CodeUri: function
-      Description: Hello World function
+      TableName: !Sub '${AWS::StackName}-db-table'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: short_id
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: !Ref ShortIdGSIName
+          KeySchema:
+            - AttributeName: short_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: !Ref DateLSIName
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Environment
+          Value: !Ref 'AWS::StackName'
+  CountLegitimateScans:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-count-legitimate-scans'
+      Tags:
+        - Key: Environment
+          Value: !Ref 'AWS::StackName'
+  BadgeAttendeesFifo:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-badge-attendees.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      Tags:
+        - Key: Environment
+          Value: !Ref 'AWS::StackName'
+  EventbriteSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-eventbrite-secret'
+      Description: Secret for Eventbrite API
+      Tags:
+        - Key: Environment
+          Value: !Ref 'AWS::StackName'
+
+  UpdateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: update_fields.lambda_handler
       Architectures:
       - x86_64
       Tracing: Active
       Events:
-        HelloPath:
-          Type: Api           # More info about API Event Source: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-function-api.html
+        UpdateEvent:
+          Type: Api
           Properties:
-            Path: /hello
-            Method: GET
-             # Powertools env vars: https://awslabs.github.io/aws-lambda-powertools-python/#environment-variables
+            Path: /attendee
+            Method: POST
       Environment:
         Variables:
-          POWERTOOLS_SERVICE_NAME: PowertoolsHelloWorld
-          POWERTOOLS_METRICS_NAMESPACE: Powertools
-          LOG_LEVEL: INFO
-      Tags:
-        LambdaPowertools: python
+          INDEX_NAME: !Ref ShortIdGSIName
+      Policies: 
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
+  GetInformationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: get_information.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        GetInformationEvent:
+          Type: Api
+          Properties:
+            Path: /attendee
+            Method: GET
+      Environment:
+        Variables:
+          INDEX_NAME: !Ref ShortIdGSIName
+          QUEUE_URL: !Ref CountLegitimateScans
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !Ref CountLegitimateScans
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamoDBTable
+  UnlockActivationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: unlock_activation.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        UnlockActivationEvent:
+          Type: Api
+          Properties:
+            Path: /attendee/activate
+            Method: GET
+      Environment:
+        Variables:
+          INDEX_NAME: !Ref ShortIdGSIName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
+  CheckExistenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: check_existence.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        CheckExistenceEvent:
+          Type: Api
+          Properties:
+            Path: /attendee/validate
+            Method: GET
+      Environment:
+        Variables:
+          INDEX_NAME: !Ref ShortIdGSIName
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamoDBTable
+  GetPassportStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: get_passport_status.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        GetPassportStatusEvent:
+          Type: Api
+          Properties:
+            Path: /attendee/passport
+            Method: GET
+        GetSponsorPassportStatusEvent:
+          Type: Api
+          Properties:
+            Path: /sponsor/passport
+            Method: GET
+      Environment:
+        Variables:
+          INDEX_NAME: !Ref ShortIdGSIName
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamoDBTable
+  StampPassportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: stamp_passport.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        StampPassportEvent:
+          Type: Api
+          Properties:
+            Path: /sponsor/passport
+            Method: POST
+      Environment:
+        Variables:
+          INDEX_NAME: !Ref ShortIdGSIName
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable
+  CreateSponsorJWTFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: create_sponsor_jwt.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        CreateSponsorJWTEvent:
+          Type: Api
+          Properties:
+            Path: /sponsor/auth
+            Method: POST
+      Policies: 
+        - DynamoDBReadPolicy:
+            TableName: !Ref DynamoDBTable
+  EventbriteWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: eventbrite_webhook.lambda_handler
+      Architectures:
+      - x86_64
+      Tracing: Active
+      Events:
+        EventbriteWebhookEvent:
+          Type: Api
+          Properties:
+            Path: /eventbrite/webhook
+            Method: POST
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref BadgeAttendeesFifo
+          SECRET_NAME: !Ref EventbriteSecret
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt  BadgeAttendeesFifo.QueueName
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref EventbriteSecret
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDBTable  
 
   ApplicationResourceGroup:
     Type: AWS::ResourceGroups::Group
@@ -55,12 +275,3 @@ Resources:
       ResourceGroupName:
         Ref: ApplicationResourceGroup
       AutoConfigurationEnabled: 'true'
-Outputs:
-  HelloWorldApi:
-    Description: API Gateway endpoint URL for Prod environment for Hello World Function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello"
-
-  HelloWorldFunction:
-    Description: Hello World Lambda Function ARN
-    Value: !GetAtt HelloWorldFunction.Arn
-

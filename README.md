@@ -24,6 +24,10 @@ The project consists of two main components:
   - DynamoDB for data storage
   - API Gateway endpoints
 
+## Video demo
+
+[![YouTube](http://i.ytimg.com/vi/8jSG9J0Iyqw/hqdefault.jpg)](https://www.youtube.com/watch?v=8jSG9J0Iyqw)
+
 ## Contributing
 
 To contribute to this project, please follow the steps below:

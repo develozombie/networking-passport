@@ -30,14 +30,8 @@
         }
 
         // Inicializa el agente en la carga de la página.
-        const fpPromise = import('https://awscommunity.mx/VEIljBrUWj7hmsD1/UZH4gGXwM3TIkm7Z?apiKey=xlUt8pmErkBdwDbetxgI')
-            .then(FingerprintJS => FingerprintJS.load({
-                endpoint: [
-                    "https://awscommunity.mx/VEIljBrUWj7hmsD1/y9bRnWRbhMEDfPIL",
-                    FingerprintJS.defaultEndpoint
-                ]
-            }))
-
+        const fpPromise = import('https://openfpcdn.io/fingerprintjs/v3')
+            .then(FingerprintJS => FingerprintJS.load())
         // Obtiene el visitorId cuando lo necesites.
         fpPromise
             .then(fp => {
